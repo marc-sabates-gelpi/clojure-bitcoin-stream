@@ -1,36 +1,14 @@
 # bitcoin-stream
 
-FIXME: description
-
-## Installation
-
-Download from http://example.com/FIXME.
+Code to see bitcoin network activity
 
 ## Usage
 
-FIXME: explanation
+    $ lein run [args]
 
-    $ java -jar bitcoin-stream-0.1.0-standalone.jar [args]
-
-## Options
-
-FIXME: listing of options this app accepts.
-
-## Examples
-
-...
-
-### Bugs
-
-...
-
-### Any Other Sections
-### That You Think
-### Might be Useful
-
-## License
-
-Copyright © 2017 FIXME
-
-Distributed under the Eclipse Public License either version 1.0 or (at
-your option) any later version.
+    Where args can be one of:
+    * ping
+    * transactions
+    * blocks
+    * last-transaction
+    * last-block
