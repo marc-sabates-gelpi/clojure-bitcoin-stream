@@ -12,26 +12,27 @@
 ;; * Work with data streams
 
 (def ^:const END_POINT "wss://ws.blockchain.info/inv")
-(def ^:const ops {:error (json/write-str {"op" "error"})
-          :ping (json/write-str {"op" "ping"})
-          :transactions (json/write-str {"op" "unconfirmed_sub"})
-          :blocks (json/write-str {"op" "blocks_sub"})
-          :last-transaction (json/write-str {"op" "ping_tx"})
-          :last-block (json/write-str {"op" "ping_block"})})
 (def ^:const TIMEOUT 30000)
+(def ^:const ops {:error (json/write-str {"op" "error"})
+                  :ping (json/write-str {"op" "ping"})
+                  :transactions (json/write-str {"op" "unconfirmed_sub"})
+                  :blocks (json/write-str {"op" "blocks_sub"})
+                  :last-transaction (json/write-str {"op" "ping_tx"})
+                  :last-block (json/write-str {"op" "ping_block"})})
+(def network-activity (chan 128))
 
-(defmacro websocket-write [c activity data]
+(defmacro websocket-write [c data]
   `(do
-     (go (>! ~activity ~data))
+     (go (>! network-activity ~data))
      (s/put! ~c ~data)))
 
 (defmacro ping [c]
   `(s/put! ~c (:ping ops)))
 
-(defn keep-alive [{:keys [activity conn]}]
+(defn keep-alive [conn]
   (go-loop []
     (alt! [(timeout TIMEOUT)] (ping conn)
-          [activity] nil) 
+          [network-activity] nil) 
     (recur)))
 
 (defmulti filter-response :op)
@@ -44,16 +45,15 @@
 
 (defn -main
   [& args]
-  (let [conn @(http/websocket-client END_POINT) activity (chan 128) [op-key & _] args]
-    (keep-alive {:activity activity :conn conn})
+  (let [conn @(http/websocket-client END_POINT) [op-key & _] args]
+    (keep-alive conn)
     (if-let [k (keyword op-key)]
       (if-let [op (k ops)]
-        (websocket-write conn activity op)))
+        (websocket-write conn op)))
     (loop []
-      ;; (-> @(s/take! conn (:error ops))
-      ;;     (fn [x] (json/read-str x :key-fn keyword))
-      ;;     filter-response
-      ;;     (fn [y] (str (l/local-now) " Message: " y))
-      ;;     println)
-      (println (str "\n" (l/local-now) " Message:\n" (filter-response (json/read-str @(s/take! conn (:error ops)) :key-fn keyword))))
+      (-> @(s/take! conn (:error ops))
+          (json/read-str :key-fn keyword)
+          filter-response
+          (#(str "\n" (l/local-now) " Message:\n" %))
+          println)
       (recur))))
