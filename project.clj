@@ -8,7 +8,8 @@
                  [org.clojure/data.json "0.2.6"]
                  [manifold "0.1.6"]
                  [org.clojure/core.async "0.3.443"]
-                 [clj-time "0.14.0"]]
+                 [clj-time "0.14.0"]
+                 [medley "1.0.0"]]
   :main ^:skip-aot bitcoin-stream.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}})
