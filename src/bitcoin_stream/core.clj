@@ -5,6 +5,7 @@
             [manifold.stream :as s]
             [clojure.core.async :refer [timeout <! go-loop alt! chan go >!]]
             [clj-time.local :as l]
+            [clj-time.coerce :as c]
             [medley.core :as medley])
   (:gen-class))
 
@@ -37,9 +38,25 @@
           [network-activity] nil) 
     (recur)))
 
+(defn- satoshi-to-bitcoin
+  [x]
+  (format "%.8f" (double (/ x 100000000))))
+
 (defmulti filter-response :op)
 
 (defmethod filter-response "block" [resp] (medley/dissoc-in resp [:x :txIndexes]))
+
+(defmethod filter-response "utx"
+  [{{t :time [{{addr-in :addr value-in :value} :prev_out} & _] :inputs o :out} :x op :op}]
+  {:op op :trans-time (str (c/from-long t)) :addr-in addr-in :value-in value-in :out (map #(select-keys % [:addr :value]) o)})
+
+(defmulti tabulate :op)
+(defmethod tabulate "utx"
+  [trans]
+  (str "Transaction time: " (:trans-time trans) "\n"
+       "In\taddr:\t" (:addr-in trans) "\tvalue:\t" (satoshi-to-bitcoin (:value-in trans)) "BTC\n"
+       "\nOut" (reduce #(str % "\taddr:\t" (:addr %2) "\tvalue:\t" (satoshi-to-bitcoin (:value %2)) "BTC\n") "" (:out trans))
+       "\n"))
 
 (defmethod filter-response :default [resp] resp)
 
@@ -48,14 +65,17 @@
   (let [[op-key & _] args]
     (if-let [k (keyword op-key)]
       (if-let [op (k ops)]
-        (let [conn @(http/websocket-client END_POINT {:max-frame-payload 256000 :max-frame-size 512000})]
-          (keep-alive conn)  
-          (websocket-write conn op)
-          (loop []
-            (if-let [response @(s/take! conn)]
-              (-> response
-                  (json/read-str :key-fn keyword)
-                  filter-response
-                  (#(str "\n" (l/local-now) " Message:\n" %))
-                  println))
-            (recur)))))))
+        (try
+          (let [conn @(http/websocket-client END_POINT ;; {:max-frame-payload 0 :max-frame-size 512000}
+                                                )]
+               (keep-alive conn)  
+               (websocket-write conn op)
+               (loop []
+                 (if-let [response @(s/take! conn)]
+                   (-> response
+                       (json/read-str :key-fn keyword)
+                       filter-response
+                       tabulate
+                       println))
+                 (recur)))
+          (catch Exception e (str "caught exception: " (.getMessage e))))))))
