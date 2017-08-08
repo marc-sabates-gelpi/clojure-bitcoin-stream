@@ -6,7 +6,8 @@
             [clojure.core.async :refer [timeout <! go-loop alt! chan go >!]]
             [clj-time.local :as l]
             [clj-time.coerce :as c]
-            [medley.core :as medley])
+            [medley.core :as medley]
+            [clostache.parser :refer [render-resource]])
   (:gen-class))
 
 ;; Objectives
@@ -17,6 +18,7 @@
 
 (def ^:const END_POINT "wss://ws.blockchain.info/inv")
 (def ^:const TIMEOUT 30000)
+(def ^:const TRANSACTION_TMPL "templates/transaction.mustache")
 (def ^:const ops {:ping (json/write-str {"op" "ping"})
                   :transactions (json/write-str {"op" "unconfirmed_sub"})
                   :blocks (json/write-str {"op" "blocks_sub"})
@@ -38,36 +40,39 @@
           [network-activity] nil) 
     (recur)))
 
-(defn- satoshi-to-bitcoin
-  [x]
-  (format "%.8f" (double (/ x 100000000))))
+(defmacro posix->millis [posix]
+  `(str (c/from-long (* ~posix 1000))))
+
+(defn satoshi->btc [satoshi]
+  (format "%.8f" (double (/ satoshi 100000000))))
+
+(defn get-addr-value-formatted [m]
+  (update-in (select-keys m [:addr :value]) [:value] satoshi->btc))
 
 (defmulti filter-response :op)
-
-(defmethod filter-response "block" [resp] (medley/dissoc-in resp [:x :txIndexes]))
-
-(defmethod filter-response "utx"
-  [{{t :time [{{addr-in :addr value-in :value} :prev_out} & _] :inputs o :out} :x op :op}]
-  {:op op :trans-time (str (c/from-long t)) :addr-in addr-in :value-in value-in :out (map #(select-keys % [:addr :value]) o)})
+(defmethod filter-response :default [resp]
+  resp)
+(defmethod filter-response "block" [resp]
+  (medley/dissoc-in resp [:x :txIndexes]))
+(defmethod filter-response "utx" [{{t :time [{{addr-in :addr value-in :value} :prev_out} & _] :inputs out :out} :x op :op}]
+  {:op op
+   :trans-time (posix->millis t)
+   :addr-in addr-in
+   :value-in (satoshi->btc value-in)
+   :out (map get-addr-value-formatted out)})
 
 (defmulti tabulate :op)
-(defmethod tabulate "utx"
-  [trans]
-  (str "Transaction time: " (:trans-time trans) "\n"
-       "In\taddr:\t" (:addr-in trans) "\tvalue:\t" (satoshi-to-bitcoin (:value-in trans)) "BTC\n"
-       "\nOut" (reduce #(str % "\taddr:\t" (:addr %2) "\tvalue:\t" (satoshi-to-bitcoin (:value %2)) "BTC\n") "" (:out trans))
-       "\n"))
+(defmethod tabulate :default [resp]
+  resp)
+(defmethod tabulate "utx" [trans]
+  (render-resource TRANSACTION_TMPL trans))
 
-(defmethod filter-response :default [resp] resp)
-
-(defn -main
-  [& args]
+(defn -main [& args]
   (let [[op-key & _] args]
     (if-let [k (keyword op-key)]
       (if-let [op (k ops)]
         (try
-          (let [conn @(http/websocket-client END_POINT ;; {:max-frame-payload 0 :max-frame-size 512000}
-                                                )]
+          (let [conn @(http/websocket-client END_POINT)]
                (keep-alive conn)  
                (websocket-write conn op)
                (loop []
