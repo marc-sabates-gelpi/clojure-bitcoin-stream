@@ -6,7 +6,6 @@
             [clojure.core.async :refer [timeout <! go-loop alt! chan go >!]]
             [clj-time.local :as l]
             [clj-time.coerce :as c]
-            [medley.core :as medley]
             [clostache.parser :refer [render-resource]])
   (:gen-class))
 
@@ -16,6 +15,7 @@
 ;; * Work with data streams
 ;; * Try to convert a stream to a lazy coll with (s/stream->seq conn)
 
+(def ^:const MAX_INT 2147483647)
 (def ^:const END_POINT "wss://ws.blockchain.info/inv")
 (def ^:const TIMEOUT 30000)
 (def ^:const TRANSACTION_TMPL "templates/transaction.mustache")
@@ -52,14 +52,18 @@
 (defmulti filter-response :op)
 (defmethod filter-response :default [resp]
   resp)
-(defmethod filter-response "block" [resp]
-  (medley/dissoc-in resp [:x :txIndexes]))
-(defmethod filter-response "utx" [{{t :time [{{addr-in :addr value-in :value} :prev_out} & _] :inputs out :out} :x op :op}]
+(defmethod filter-response "block" [{{t :time block-index :blockIndex [coin-base & _] :txIndexes} :x op :op}]
+  {:op op
+   :block-time (posix->millis t)
+   :block-index block-index
+   :coinbase coin-base})
+(defmethod filter-response "utx" [{{t :time [{{addr-in :addr value-in :value} :prev_out} & _] :inputs out :out tx-index :tx_index} :x op :op}]
   {:op op
    :trans-time (posix->millis t)
    :addr-in addr-in
    :value-in (satoshi->btc value-in)
-   :out (map get-addr-value-formatted out)})
+   :out (map get-addr-value-formatted out)
+   :tx-index tx-index})
 
 (defmulti tabulate :op)
 (defmethod tabulate :default [resp]
@@ -67,12 +71,32 @@
 (defmethod tabulate "utx" [trans]
   (render-resource TRANSACTION_TMPL trans))
 
+(defmulti update-data (fn [resp data] (:op resp)))
+(defmethod update-data "utx" [resp data]
+  (if (some #{(:tx-index resp)} (:coinbase data))
+    (-> data
+        (update :miners-data conj resp)
+        (assoc :current-op :coinbase))
+    data))
+(defmethod update-data "block" [resp data]
+  (println "[update-data] BLOCK")
+  (-> data
+      (update :coinbase conj (:coinbase resp))
+      (assoc :current-op :block)))
+(defmethod update-data :default [resp data]
+  (println (str "[update-data] DEFAULT"))
+  (assoc data :current-op :none))
+
+(defn tee-to-show-update [data]
+  (if-not (= :none (:current-op data)) (println data))
+  data)
+
 (defn -main [& args]
   (let [[op-key & _] args]
     (if-let [k (keyword op-key)]
       (if-let [op (k ops)]
         (try
-          (let [conn @(http/websocket-client END_POINT)]
+          (let [conn @(http/websocket-client END_POINT {:max-frame-payload MAX_INT})]
                (keep-alive conn)  
                (websocket-write conn op)
                (loop []
@@ -84,3 +108,18 @@
                        println))
                  (recur)))
           (catch Exception e (str "caught exception: " (.getMessage e))))))))
+
+(defn miners []
+  "Keeps track of the miners that have mined blocks"
+  (let [conn @(http/websocket-client END_POINT {:max-frame-payload MAX_INT})]
+    (keep-alive conn)  
+    (websocket-write conn (:blocks ops))
+    (websocket-write conn (:transactions ops))
+    (loop [data {:miners-data {} :coinbase [] :current-op :none}]
+      (let [response @(s/take! conn)]
+        (recur
+         (-> response
+             (json/read-str :key-fn keyword)
+             filter-response
+             (update-data data)
+             tee-to-show-update))))))
